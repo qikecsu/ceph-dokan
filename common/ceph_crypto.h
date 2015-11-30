@@ -14,6 +14,7 @@
 
 namespace ceph {
   namespace crypto {
+    void assert_init();
     void init(CephContext *cct);
     void shutdown();
 

@@ -116,8 +116,6 @@ void global_init(std::vector < const char * > *alt_def_args,
 {
   global_pre_init(alt_def_args, args, module_type, code_env, flags);
 
-  g_lockdep = g_ceph_context->_conf->lockdep;
-
   // signal stuff
   //int siglist[] = { SIGPIPE, 0 };
   int siglist[] = { 0, 0 };
@@ -140,9 +138,6 @@ void global_init(std::vector < const char * > *alt_def_args,
     }
   }
 
-  if (g_lockdep) {
-    lockdep_register_ceph_context(g_ceph_context);
-  }
   register_assert_context(g_ceph_context);
 
   // call all observers now.  this has the side-effect of configuring
@@ -168,8 +163,16 @@ int global_init_prefork(CephContext *cct, int flags)
   if (g_code_env != CODE_ENVIRONMENT_DAEMON)
     return -1;
   const md_config_t *conf = cct->_conf;
-  if (!conf->daemonize)
+  if (!conf->daemonize) {
+    if (atexit(pidfile_remove_void)) {
+      derr << "global_init_daemonize: failed to set pidfile_remove function "
+	   << "to run at exit." << dendl;
+    }
+
+    pidfile_write(g_conf);
+
     return -1;
+  }
 
   // stop log thread
   g_ceph_context->_log->flush();

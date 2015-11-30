@@ -49,11 +49,19 @@ struct lockdep_stopper_t {
 static pthread_mutex_t lockdep_mutex = PTHREAD_MUTEX_INITIALIZER;
 static CephContext *g_lockdep_ceph_ctx = NULL;
 static lockdep_stopper_t lockdep_stopper;
-static ceph::unordered_map<const char *, int> lock_ids;
-static map<int, const char *> lock_names;
-static int last_id = 0;
+static ceph::unordered_map<std::string, int> lock_ids;
+static map<int, std::string> lock_names;
+static map<int, int> lock_refs;
+static list<int> free_ids;
 static ceph::unordered_map<pthread_t, map<int,BackTrace*> > held;
 static BackTrace *follows[MAX_LOCKS][MAX_LOCKS];       // follows[a][b] means b taken after a
+
+static bool lockdep_force_backtrace()
+{
+  return false;
+//  return (g_lockdep_ceph_ctx != NULL &&
+//          g_lockdep_ceph_ctx->_conf->lockdep_force_backtrace);
+}
 
 /******* Functions **********/
 void lockdep_register_ceph_context(CephContext *cct)
@@ -135,7 +143,41 @@ int lockdep_register(const char *name)
 //  pthread_mutex_unlock(&lockdep_mutex);
 //
 //  return id;
-  return 0;//by ketor
+  return 0;
+}
+void lockdep_unregister(int id)
+{
+  if (id < 0) {
+    return;
+  }
+
+  pthread_mutex_lock(&lockdep_mutex);
+
+  map<int, std::string>::iterator p = lock_names.find(id);
+  assert(p != lock_names.end());
+
+  int &refs = lock_refs[id];
+  if (--refs == 0) {
+    // reset dependency ordering
+    for (int i=0; i<MAX_LOCKS; ++i) {
+      delete follows[id][i];
+      follows[id][i] = NULL;
+
+      delete follows[i][id];
+      follows[i][id] = NULL;
+    }
+
+    lockdep_dout(10) << "unregistered '" << p->second << "' from " << id
+                     << dendl;
+    lock_ids.erase(p->second);
+    lock_names.erase(id);
+    lock_refs.erase(id);
+    free_ids.push_back(id);
+  } else {
+    lockdep_dout(20) << "have " << refs << " of '" << p->second << "' "
+                     << "from " << id << dendl;
+  }
+  pthread_mutex_unlock(&lockdep_mutex);
 }
 
 
@@ -166,7 +208,7 @@ static bool does_follow(int a, int b)
   return false;
 }
 
-int lockdep_will_lock(const char *name, int id)
+int lockdep_will_lock(const char *name, int id, bool force_backtrace)
 {
 //by ketor  pthread_t p = pthread_self();
 //  if (id < 0) id = lockdep_register(name);

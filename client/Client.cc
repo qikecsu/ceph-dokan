@@ -307,8 +307,7 @@ void Client::tear_down_cache()
        ++it) {
     Fh *fh = it->second;
     ldout(cct, 1) << "tear_down_cache forcing close of fh " << it->first << " ino " << fh->inode->ino << dendl;
-    put_inode(fh->inode);
-    delete fh;
+    _release_fh(fh);
   }
   fd_map.clear();
 
@@ -1597,11 +1596,9 @@ int Client::make_request(MetaRequest *request,
   if (!request->reply) {
     assert(request->aborted);
     assert(!request->got_unsafe);
-    if (request->retry_attempt == 0) {
-      request->item.remove_myself();
-      mds_requests.erase(tid);
-      put_request(request);
-    }
+    request->item.remove_myself();
+    mds_requests.erase(tid);
+    put_request(request); // request map's
     put_request(request); // ours
     return -ETIMEDOUT;
   }
@@ -1921,13 +1918,6 @@ void Client::_kick_stale_sessions()
 void Client::send_request(MetaRequest *request, MetaSession *session,
 			  bool drop_cap_releases)
 {
-  if (request->aborted) {
-    ldout(cct, 10) << "send_request aborted request " << request->get_tid() << dendl;
-    request->item.remove_myself();
-    mds_requests.erase(request->get_tid());
-    put_request(request);
-    return;
-  }
   // make the request
   mds_rank_t mds = session->mds_num;
   ldout(cct, 10) << "send_request rebuilding request " << request->get_tid()
@@ -2409,15 +2399,14 @@ void Client::kick_requests(MetaSession *session)
 {
   ldout(cct, 10) << "kick_requests for mds." << session->mds_num << dendl;
   for (map<ceph_tid_t, MetaRequest*>::iterator p = mds_requests.begin();
-       p != mds_requests.end(); ) {
-    MetaRequest *req = p->second;
-    ++p;
-    if (req->got_unsafe)
+       p != mds_requests.end();
+       ++p) {
+    if (p->second->got_unsafe)
       continue;
-    if (req->retry_attempt > 0)
+    if (p->second->retry_attempt > 0)
       continue; // new requests only
-    if (req->mds == session->mds_num) {
-      send_request(req, session);
+    if (p->second->mds == session->mds_num) {
+      send_request(p->second, session);
     }
   }
 }
@@ -2425,18 +2414,16 @@ void Client::kick_requests(MetaSession *session)
 void Client::resend_unsafe_requests(MetaSession *session)
 {
   for (xlist<MetaRequest*>::iterator iter = session->unsafe_requests.begin();
-       !iter.end(); ) {
-    MetaRequest *req = *iter;
-    ++iter;
-    send_request(req, session);
-  }
+       !iter.end();
+       ++iter)
+    send_request(*iter, session);
 
   // also re-send old requests when MDS enters reconnect stage. So that MDS can
   // process completed requests in clientreplay stage.
   for (map<ceph_tid_t, MetaRequest*>::iterator p = mds_requests.begin();
-       p != mds_requests.end(); ) {
+       p != mds_requests.end();
+       ++p) {
     MetaRequest *req = p->second;
-    ++p;
     if (req->got_unsafe)
       continue;
     if (req->retry_attempt == 0)
@@ -6107,8 +6094,12 @@ int Client::_readdir_cache_cb(dir_result_t *dirp, add_dirent_cb_t cb, void *p)
     ++pd;
   }
 
-  string prev_name;
-  while (!pd.end()) {
+  string dn_name;
+  while (true) {
+    if (!dirp->inode->is_complete_and_ordered())
+      return -EAGAIN;
+    if (pd.end())
+      break;
     Dentry *dn = *pd;
     if (dn->inode == NULL) {
       ldout(cct, 15) << " skipping null '" << dn->name << "'" << dendl;
@@ -6131,6 +6122,8 @@ int Client::_readdir_cache_cb(dir_result_t *dirp, add_dirent_cb_t cb, void *p)
     if (pd.end())
       next_off = dir_result_t::END;
 
+    dn_name = dn->name; // fill in name while we have lock
+
     client_lock.Unlock();
     int r = cb(p, &de, &st, stmask, next_off);  // _next_ offset
     client_lock.Lock();
@@ -6138,13 +6131,12 @@ int Client::_readdir_cache_cb(dir_result_t *dirp, add_dirent_cb_t cb, void *p)
 	     << " = " << r
 	     << dendl;
     if (r < 0) {
-      dirp->next_offset = dn->offset;
-      dirp->at_cache_name = prev_name;
+      dirp->next_offset = next_off - 1;
       return r;
     }
 
-    prev_name = dn->name;
-    dirp->offset = next_off;
+    dirp->next_offset = dirp->offset = next_off;
+    dirp->at_cache_name = dn_name; // we successfully returned this one; update!
     if (r > 0)
       return r;
   }
@@ -6762,10 +6754,18 @@ int Client::_release_fh(Fh *f)
     ldout(cct, 10) << "_release_fh " << f << " on inode " << *in << " no async_err state" << dendl;
   }
 
-  put_inode(in);
-  delete f;
+  _put_fh(f);
 
   return err;
+}
+
+void Client::_put_fh(Fh *f)
+{
+  int left = f->put();
+  if (!left) {
+    put_inode(f->inode);
+    delete f;
+  }
 }
 
 int Client::_open(Inode *in, int flags, mode_t mode, Fh **fhp, int uid, int gid)
@@ -7107,6 +7107,15 @@ done:
   return r < 0 ? r : bl->length();
 }
 
+Client::C_Readahead::C_Readahead(Client *c, Fh *f) :
+  client(c), f(f) {
+    f->get();
+}
+
+Client::C_Readahead::~C_Readahead() {
+  client->_put_fh(f);
+}
+
 void Client::C_Readahead::finish(int r) {
   lgeneric_subdout(client->cct, client, 20) << "client." << client->get_nodeid() << " " << "C_Readahead on " << f->inode << dendl;
   client->put_cap_ref(f->inode, CEPH_CAP_FILE_RD | CEPH_CAP_FILE_CACHE);
@@ -7414,9 +7423,7 @@ int Client::_write(Fh *f, int64_t offset, uint64_t size, const char *buf)
 
     // async, caching, non-blocking.
     r = objectcacher->file_write(&in->oset, &in->layout, in->snaprealm->get_snap_context(),
-			         offset, size, bl, ceph_clock_now(cct), 0,
-			         client_lock);
-
+			         offset, size, bl, ceph_clock_now(cct), 0);
     put_cap_ref(in, CEPH_CAP_FILE_BUFFER);
 
     if (r < 0)

@@ -316,6 +316,7 @@ CephContext::CephContext(uint32_t module_type_)
     _conf(new md_config_t()),
     _log(NULL),
     _module_type(module_type_),
+    _crypto_inited(false),
     _service_thread(NULL),
     _log_obs(NULL),
     //by ketor _admin_socket(NULL),
@@ -323,7 +324,8 @@ CephContext::CephContext(uint32_t module_type_)
     _perf_counters_conf_obs(NULL),
     //by ketor _heartbeat_map(NULL),
     _crypto_none(NULL),
-    _crypto_aes(NULL)
+    _crypto_aes(NULL),
+    _lockdep_obs(NULL)
 {
   ceph_spin_init(&_service_thread_lock);
   ceph_spin_init(&_associated_objs_lock);
@@ -337,6 +339,9 @@ CephContext::CephContext(uint32_t module_type_)
 
   _cct_obs = new CephContextObs(this);
   _conf->add_observer(_cct_obs);
+
+  _lockdep_obs = new LockdepObs(this);
+  _conf->add_observer(_lockdep_obs);
 
   _perf_counters_collection = new PerfCountersCollection(this);
   //by ketor _admin_socket = new AdminSocket(this);
@@ -398,6 +403,10 @@ CephContext::~CephContext()
   delete _cct_obs;
   _cct_obs = NULL;
 
+  _conf->remove_observer(_lockdep_obs);
+  delete _lockdep_obs;
+  _lockdep_obs = NULL;
+
   _log->stop();
   delete _log;
   _log = NULL;
@@ -409,6 +418,14 @@ CephContext::~CephContext()
 
   delete _crypto_none;
   delete _crypto_aes;
+  if (_crypto_inited)
+    ceph::crypto::shutdown();
+}
+
+void CephContext::init_crypto()
+{
+  ceph::crypto::init(this);
+  _crypto_inited = true;
 }
 
 void CephContext::start_service_thread()

@@ -34,12 +34,6 @@
 # endif
 #endif
 
-# if BYTE_ORDER == LITTLE_ENDIAN
-#  define CEPH_LITTLE_ENDIAN
-# elif BYTE_ORDER == BIG_ENDIAN
-#  define CEPH_BIG_ENDIAN
-# endif
-
 static __inline__ __u16 swab16(__u16 val) 
 {
   return (val >> 8) | (val << 8);
