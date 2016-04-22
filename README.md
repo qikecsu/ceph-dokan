@@ -42,7 +42,12 @@ Download MinGW from https://www.dropbox.com/s/i72wyymzo0ets2s/MinGW-20151112.zip
 
 Unzip the MinGW-20151112.zip to C:\
 
-Download and compile Boost Libs in C:\Setup\boost_1_58_0\
+Download and compile Boost Libs in C:\boost_1_60_0\
+
+Compile boost system lib only:
+
+    bootstrap mingw
+    b2 toolset=gcc --with-system
 
 Open C:\MinGW\msys\1.0\msys.bat you will get a MINGW32 bash shell.
 
