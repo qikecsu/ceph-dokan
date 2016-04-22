@@ -3,6 +3,7 @@ CC        = gcc -D__USE_FILE_OFFSET64 -DHAVE_CONFIG_H -I. -D__CEPH__ -D_FILE_OFF
 CPP       = g++ -D__USE_FILE_OFFSET64 -DHAVE_CONFIG_H -I. -D__CEPH__ -D_FILE_OFFSET_BITS=64 -D_REENTRANT -D_THREAD_SAFE -D__STDC_FORMAT_MACROS -D_GNU_SOURCE -fno-strict-aliasing -fsigned-char -Wno-invalid-offsetof -fno-builtin-malloc -fno-builtin-calloc -fno-builtin-realloc -fno-builtin-free -g -DPIC 
 
 BOOST_PATH=C:\boost_1_60_0
+BOOST_SYSTEM_LIB=libboost_system-mgw49-mt-1_60.a 
 CEPH_INCLUDE = -I./ -I./global -I./mingw_include -I$(BOOST_PATH)
 CFLAGS   = $(CEPH_INCLUDE)
 CLIBS    = 
@@ -62,7 +63,7 @@ test-cephfs.exe:test_cephfs.o libcephfs.dll
 	@echo "MAKE "$@" FINISH"
 	@echo "**************************************************************"
 
-ceph-dokan.exe:dokan/ceph_dokan.o dokan/posix_acl.o dokan/dokan.lib $(OBJECTS) libboost_system-mgw48-mt-1_58.a
+ceph-dokan.exe:dokan/ceph_dokan.o dokan/posix_acl.o dokan/dokan.lib $(OBJECTS) $(BOOST_SYSTEM_LIB)
 	$(CPP) $(CFLAGS) $(CLIBS) -o $@ $^ -lws2_32 -lpthread -unicode 
 	@echo "**************************************************************"
 	@echo "MAKE "$@" FINISH"
